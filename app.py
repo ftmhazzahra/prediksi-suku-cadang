@@ -44,7 +44,22 @@ def load_raw_data_from_sheet():
     df["ds"] = pd.to_datetime(df["ds"])
     df = df.dropna(subset=["ds", "nama_barang", "y"])
 
-    return df, ws
+    return df  
+
+def get_worksheet():
+    scope = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=scope
+    )
+    client = gspread.authorize(creds)
+
+    sh = client.open_by_key(st.secrets["sheets"]["sheet_id"])
+    ws = sh.worksheet(st.secrets["sheets"]["data"])
+    return ws
 
 
 def build_full_timeseries(df):
@@ -185,7 +200,7 @@ def main():
     st.title("📈 Peramalan Permintaan Suku Cadang Bengkel (Prophet)")
 
     # ---- Load data dari Google Sheets ----
-    df_raw, worksheet = load_raw_data_from_sheet()
+    df_raw = load_raw_data_from_sheet()
     df_full, mapping_nama = build_full_timeseries(df_raw)
     hasil_metrics = compute_metrics(df_full, mapping_nama)
 
@@ -283,9 +298,13 @@ def main():
             barang_baru,
             int(jumlah_baru)
         ]
-        worksheet.append_row(new_row)
+    
+        ws = get_worksheet()         
+        ws.append_row(new_row)
+    
         st.success("Transaksi baru berhasil disimpan ke Google Sheets.")
         st.caption("Refresh halaman untuk melihat pembaruan data dan forecast.")
 
 if __name__ == "__main__":
     main()
+
