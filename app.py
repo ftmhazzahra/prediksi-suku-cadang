@@ -7,36 +7,47 @@ import matplotlib.pyplot as plt
 from prophet import Prophet
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 
+import gspread
+from google.oauth2.service_account import Credentials
+
 st.set_page_config("Forecast Suku Cadang Bengkel", layout="wide")
 plt.rcParams["figure.figsize"] = (9, 4)
 plt.rcParams["figure.dpi"] = 120
 
 
-# =============== CONFIG ===============
-DATA_PATH = "dataset.xlsx"   # ganti dengan file kamu
-SHEET_NAME = 0                      # atau "Sheet1"
-
-
 # =============== DATA LOADER ===============
 @st.cache_data
-def load_processed_data():
-    df_full = pd.read_csv("df_full_clean.csv")
-    df_full["ds"] = pd.to_datetime(df_full["ds"])
-
-    hasil = pd.read_csv("hasil_metrics.csv")
-
-    # bikin mapping nama
-    mapping_nama = (
-        hasil[["nama_clean", "Nama Barang"]]
-        .drop_duplicates()
-        .set_index("nama_clean")["Nama Barang"]
-        .to_dict()
+def load_raw_data_from_sheet():
+    # koneksi ke Google Sheets pakai secrets
+    scope = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=scope
     )
-    return df_full, hasil, mapping_nama
+    client = gspread.authorize(creds)
+
+    sh = client.open_by_key(st.secrets["sheets"]["sheet_id"])
+    ws = sh.worksheet(st.secrets["sheets"]["data"])
+
+    data = ws.get_all_records()
+    df = pd.DataFrame(data)
+
+    # samakan nama kolom
+    df = df.rename(columns={
+        "Tanggal": "ds",
+        "Nama Barang": "nama_barang",
+        "Jumlah": "y"
+    })
+    df["ds"] = pd.to_datetime(df["ds"])
+    df = df.dropna(subset=["ds", "nama_barang", "y"])
+
+    return df, ws
 
 
 def build_full_timeseries(df):
-    # nama_clean untuk konsistensi
     df["nama_clean"] = (
         df["nama_barang"]
         .str.lower()
@@ -63,7 +74,6 @@ def build_full_timeseries(df):
                 .apply(_expand)
     )
 
-    # mapping nama asli
     mapping_nama = (
         df[["nama_clean", "nama_barang"]]
         .drop_duplicates()
@@ -174,17 +184,13 @@ def train_full_and_forecast(df_brand, periods=30):
 def main():
     st.title("📈 Peramalan Permintaan Suku Cadang Bengkel (Prophet)")
 
-    # # ---- Load & preprocess data ----
-    # df_raw = load_raw_data()
-    # df_full, mapping_nama = build_full_timeseries(df_raw)
-    # hasil_metrics = compute_metrics(df_full, mapping_nama)
-
-    df_full, hasil_metrics, mapping_nama = load_processed_data()
+    # ---- Load data dari Google Sheets ----
+    df_raw, worksheet = load_raw_data_from_sheet()
+    df_full, mapping_nama = build_full_timeseries(df_raw)
+    hasil_metrics = compute_metrics(df_full, mapping_nama)
 
     # ---- Sidebar: pilih barang & horizon ----
-    list_barang = (
-        hasil_metrics.sort_values("Nama Barang")["Nama Barang"].tolist()
-    )
+    list_barang = hasil_metrics.sort_values("Nama Barang")["Nama Barang"].tolist()
     barang_selected = st.sidebar.selectbox("Pilih Barang", list_barang)
 
     nama_clean_selected = None
@@ -197,13 +203,20 @@ def main():
 
     # ---- Info MAPE & RMSE ----
     met_row = hasil_metrics[hasil_metrics["Nama Barang"] == barang_selected]
+
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("MAPE (test) – Prophet",
-                  f"{met_row['MAPE_Prophet'].iloc[0]:.2f}%" if not met_row['MAPE_Prophet'].isna().iloc[0] else "-")
+        if not met_row["MAPE_Prophet"].isna().iloc[0]:
+            st.metric("MAPE (test) – Prophet",
+                      f"{met_row['MAPE_Prophet'].iloc[0]:.2f}%")
+        else:
+            st.metric("MAPE (test) – Prophet", "-")
     with col2:
-        st.metric("RMSE (test) – Prophet",
-                  f"{met_row['RMSE_Prophet'].iloc[0]:.2f}" if not met_row['RMSE_Prophet'].isna().iloc[0] else "-")
+        if not met_row["RMSE_Prophet"].isna().iloc[0]:
+            st.metric("RMSE (test) – Prophet",
+                      f"{met_row['RMSE_Prophet'].iloc[0]:.2f}")
+        else:
+            st.metric("RMSE (test) – Prophet", "-")
 
     st.markdown("---")
 
@@ -223,16 +236,14 @@ def main():
     ax.legend()
     st.pyplot(fig)
 
-    # ---- Komponen Prophet (opsional) ----
+    # ---- Komponen Prophet ----
     with st.expander("Lihat Komponen Prophet (trend & musiman)"):
-        from prophet.plot import plot_components_plotly
-        # pakai matplotlib biar aman
         fig_comp = m_full.plot_components(
             m_full.predict(m_full.make_future_dataframe(periods=horizon))
         )
         st.pyplot(fig_comp)
 
-    # ---- Tabel forecast 30 hari ke depan ----
+    # ---- Tabel forecast harian ----
     st.subheader("Tabel Forecast Harian")
     fc_table = fc_future[["ds", "yhat_real"]].copy()
     fc_table["Nama Barang"] = barang_selected
@@ -243,15 +254,17 @@ def main():
     })
     st.dataframe(fc_table, use_container_width=True)
 
+    total_30 = fc_table["Prediksi Jumlah"].sum()
     avg_per_day = fc_table["Prediksi Jumlah"].mean()
     max_row = fc_table.loc[fc_table["Prediksi Jumlah"].idxmax()]
 
-    st.write(f"- Rata-rata per hari: **{avg_per_day:.0f} unit**")
-    st.write(f"- Perkiraan hari tersibuk: **{max_row['Tanggal'].date()}** dengan **{max_row['Prediksi Jumlah']:.0f} unit**")
-
-    # Total 30 hari ke depan
-    total_30 = fc_table["Prediksi Jumlah"].sum()
-    st.info(f"Perkiraan total kebutuhan {barang_selected} selama {horizon} hari ke depan: **{total_30:.0f} unit**")
+    st.info(
+        f"Perkiraan total kebutuhan {barang_selected} selama {horizon} hari ke depan: "
+        f"**{total_30:.2f} unit**.\n\n"
+        f"Rata-rata per hari: **{avg_per_day:.2f} unit**.\n"
+        f"Hari tersibuk diprediksi pada **{max_row['Tanggal'].date()}** "
+        f"dengan **{max_row['Prediksi Jumlah']:.2f} unit**."
+    )
 
     st.markdown("---")
 
@@ -265,23 +278,14 @@ def main():
         submitted = st.form_submit_button("Simpan Transaksi")
 
     if submitted:
-        # mapping balik ke nama_clean / nama_barang asli
-        # ambil nama_barang persis seperti di file
-        nama_barang_asli = barang_baru
-
-        new_row = {
-            "Tanggal": pd.to_datetime(tgl_baru),
-            "Nama Barang": nama_barang_asli,
-            "Jumlah": jumlah_baru
-        }
-
-        # baca file asli, append, lalu simpan sebagai file baru
-        df_now = pd.read_excel(DATA_PATH, sheet_name=SHEET_NAME)
-        df_now = pd.concat([df_now, pd.DataFrame([new_row])], ignore_index=True)
-        df_now.to_excel("data_transaksi_updated.xlsx", index=False)
-
-        st.success("Transaksi baru berhasil disimpan ke file data_transaksi_updated.xlsx")
-        st.caption("Untuk memperbarui model, jalankan ulang aplikasi dengan file terbaru.")
+        new_row = [
+            str(tgl_baru),
+            barang_baru,
+            int(jumlah_baru)
+        ]
+        worksheet.append_row(new_row)
+        st.success("Transaksi baru berhasil disimpan ke Google Sheets.")
+        st.caption("Refresh halaman untuk melihat pembaruan data dan forecast.")
 
 if __name__ == "__main__":
     main()
