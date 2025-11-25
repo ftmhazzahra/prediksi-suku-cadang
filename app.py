@@ -44,10 +44,10 @@ def load_raw_data_from_sheet():
         "Nama Barang": "nama_barang",
         "Jumlah": "y"
     })
-    df["ds"] = pd.to_datetime(df["ds"], errors="coerce")
+    df["ds"] = pd.to_datetime(df["ds"], errors="coerce", dayfirst=True)
     df["y"] = pd.to_numeric(df["y"], errors="coerce")
-
     df = df.dropna(subset=["ds", "nama_barang", "y"])
+
 
     return df
 
@@ -312,3 +312,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
