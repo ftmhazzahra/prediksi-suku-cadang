@@ -44,10 +44,10 @@ def load_raw_data_from_sheet():
         "Nama Barang": "nama_barang",
         "Jumlah": "y"
     })
-    df["ds"] = pd.to_datetime(df["ds"], errors="coerce", dayfirst=True)
+    df["ds"] = pd.to_datetime(df["ds"], errors="coerce")
     df["y"] = pd.to_numeric(df["y"], errors="coerce")
-    df = df.dropna(subset=["ds", "nama_barang", "y"])
 
+    df = df.dropna(subset=["ds", "nama_barang", "y"])
 
     return df
 
@@ -132,11 +132,10 @@ def load_metrics_from_colab():
 # =============== MODEL UTILS (TRAINING LIVE UNTUK FORECAST) ===============
 def train_full_and_forecast(df_brand, periods=30):
     """
-    Melatih Prophet dari data terbaru (df_brand) untuk SATU barang,
-    lalu membuat forecast ke depan 'periods' hari,
-    DIMULAI dari H+1 setelah tanggal terakhir data.
+    Melatih Prophet dari data terbaru (df_brand) untuk SATU barang
+    lalu membuat forecast ke depan 'periods' hari.
+    Ini hanya untuk forecast, bukan untuk evaluasi MAPE/RMSE.
     """
-    # 1. Siapkan data per hari
     data = (
         df_brand[["ds", "y"]]
         .groupby("ds", as_index=False)["y"]
@@ -146,13 +145,12 @@ def train_full_and_forecast(df_brand, periods=30):
     )
 
     if len(data) < 5:
+        # data terlalu sedikit, return kosong
         return None, data, pd.DataFrame()
 
-    # 2. Log transform
     data["y_log"] = np.log1p(data["y"])
     df_prophet = data[["ds", "y_log"]].rename(columns={"y_log": "y"})
 
-    # 3. Train Prophet
     m = Prophet(
         seasonality_mode="multiplicative",
         yearly_seasonality=False,
@@ -164,26 +162,12 @@ def train_full_and_forecast(df_brand, periods=30):
     m.add_country_holidays(country_name="ID")
     m.fit(df_prophet)
 
-    # 4. Tentukan tanggal terakhir di data
-    last_date = data["ds"].max()
-
-    # (opsional debug di Streamlit)
-    # st.write("Last date untuk barang ini:", last_date)
-
-    # 5. Buat future dates MANUAL: mulai H+1 dari last_date
-    future_dates = pd.date_range(
-        start=last_date + pd.Timedelta(days=1),
-        periods=periods,
-        freq="D"
-    )
-    future = pd.DataFrame({"ds": future_dates})
-
-    # 6. Prediksi hanya untuk future (tanpa history)
+    future = m.make_future_dataframe(periods=periods)
     fc = m.predict(future)
     fc["yhat_real"] = np.expm1(fc["yhat"])
 
-    # 7. fc_future langsung = fc (karena isinya cuma tanggal ke depan)
-    fc_future = fc[["ds", "yhat_real"]].copy()
+    last_date = data["ds"].max()
+    fc_future = fc[fc["ds"] > last_date].copy()
 
     return m, data, fc_future
 
@@ -248,10 +232,6 @@ def main():
     if df_b.empty:
         st.warning("Tidak ada data historis untuk barang ini di Google Sheets.")
         st.stop()
-        # ===== DEBUG: tampilkan 10 data terbaru untuk barang ini =====
-        st.subheader("📌 Debug: 10 Data Terbaru dari Barang yang Dipilih")
-        st.write(df_b.sort_values("ds").tail(10))
-
 
     m_full, data_hist, fc_future = train_full_and_forecast(df_b, periods=horizon)
     if m_full is None or fc_future.empty:
@@ -332,6 +312,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
