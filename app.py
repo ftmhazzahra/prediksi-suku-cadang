@@ -248,6 +248,10 @@ def main():
     if df_b.empty:
         st.warning("Tidak ada data historis untuk barang ini di Google Sheets.")
         st.stop()
+        # ===== DEBUG: tampilkan 10 data terbaru untuk barang ini =====
+        st.subheader("📌 Debug: 10 Data Terbaru dari Barang yang Dipilih")
+        st.write(df_b.sort_values("ds").tail(10))
+
 
     m_full, data_hist, fc_future = train_full_and_forecast(df_b, periods=horizon)
     if m_full is None or fc_future.empty:
@@ -328,5 +332,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
