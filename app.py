@@ -132,10 +132,11 @@ def load_metrics_from_colab():
 # =============== MODEL UTILS (TRAINING LIVE UNTUK FORECAST) ===============
 def train_full_and_forecast(df_brand, periods=30):
     """
-    Melatih Prophet dari data terbaru (df_brand) untuk SATU barang
-    lalu membuat forecast ke depan 'periods' hari.
-    Ini hanya untuk forecast, bukan untuk evaluasi MAPE/RMSE.
+    Melatih Prophet dari data terbaru (df_brand) untuk SATU barang,
+    lalu membuat forecast ke depan 'periods' hari,
+    DIMULAI dari H+1 setelah tanggal terakhir data.
     """
+    # 1. Siapkan data per hari
     data = (
         df_brand[["ds", "y"]]
         .groupby("ds", as_index=False)["y"]
@@ -145,12 +146,13 @@ def train_full_and_forecast(df_brand, periods=30):
     )
 
     if len(data) < 5:
-        # data terlalu sedikit, return kosong
         return None, data, pd.DataFrame()
 
+    # 2. Log transform
     data["y_log"] = np.log1p(data["y"])
     df_prophet = data[["ds", "y_log"]].rename(columns={"y_log": "y"})
 
+    # 3. Train Prophet
     m = Prophet(
         seasonality_mode="multiplicative",
         yearly_seasonality=False,
@@ -162,12 +164,26 @@ def train_full_and_forecast(df_brand, periods=30):
     m.add_country_holidays(country_name="ID")
     m.fit(df_prophet)
 
-    future = m.make_future_dataframe(periods=periods)
+    # 4. Tentukan tanggal terakhir di data
+    last_date = data["ds"].max()
+
+    # (opsional debug di Streamlit)
+    # st.write("Last date untuk barang ini:", last_date)
+
+    # 5. Buat future dates MANUAL: mulai H+1 dari last_date
+    future_dates = pd.date_range(
+        start=last_date + pd.Timedelta(days=1),
+        periods=periods,
+        freq="D"
+    )
+    future = pd.DataFrame({"ds": future_dates})
+
+    # 6. Prediksi hanya untuk future (tanpa history)
     fc = m.predict(future)
     fc["yhat_real"] = np.expm1(fc["yhat"])
 
-    last_date = data["ds"].max()
-    fc_future = fc[fc["ds"] > last_date].copy()
+    # 7. fc_future langsung = fc (karena isinya cuma tanggal ke depan)
+    fc_future = fc[["ds", "yhat_real"]].copy()
 
     return m, data, fc_future
 
@@ -312,4 +328,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
